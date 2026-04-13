@@ -5,70 +5,115 @@ load_dotenv()
 
 # ── Agents ──────────────────────────────────────────────
 
-ceo = Agent(
-    role="Optimistic CEO",
-    goal="Push for launching the product as soon as possible",
-    backstory="""You are an ambitious startup CEO. You believe the market 
-    window is now and waiting means losing to competitors. You focus on 
-    opportunities and growth potential.""",
+python_dev = Agent(
+    role="Senior Python Developer",
+    goal="Evaluate the technical feasibility of migrating Python applications from OpenShift to a private cloud",
+    backstory="""You are a senior Python developer with 10 years of experience.
+    You have built and maintained several Python applications currently running
+    on an OpenShift cluster. You know the codebase inside out — the Django APIs,
+    the Celery workers, the FastAPI microservices. You care deeply about
+    application performance, developer experience, and avoiding vendor lock-in.
+    You have some experience with AWS Lambda and GCP Cloud Run but you are
+    skeptical about the complexity of a full migration.""",
     verbose=True
 )
 
-cfo = Agent(
-    role="Cautious CFO",
-    goal="Protect the company's financial health",
-    backstory="""You are a pragmatic CFO. You always ask for data before 
-    any decision. You worry about burn rate, LTV/CAC ratio, and runway. 
-    You support launches only when the numbers make sense.""",
+devops = Agent(
+    role="DevOps Engineer",
+    goal="Assess the infrastructure, CI/CD, and operational implications of migrating from OpenShift to AWS, Azure, or GCP",
+    backstory="""You are a DevOps engineer with deep expertise in containers,
+    Kubernetes, and CI/CD pipelines. You currently manage the OpenShift cluster
+    and all the Helm charts, ArgoCD pipelines, and monitoring stack (Prometheus,
+    Grafana). You have hands-on experience with AWS EKS, Azure AKS, and GCP GKE.
+    You know that OpenShift is essentially Kubernetes with Red Hat enterprise
+    features on top. You are concerned about the operational cost, the migration
+    effort, and the risk of downtime during the transition.""",
     verbose=True
 )
 
-engineer = Agent(
-    role="Skeptical Engineer",
-    goal="Ensure technical quality before any launch",
-    backstory="""You are the lead engineer. You have seen too many rushed 
-    launches that damaged user trust. You insist on fixing the race condition 
-    in the payment module before going live.""",
+project_manager = Agent(
+    role="Project Manager",
+    goal="Make the final strategic recommendation on whether to migrate to a private cloud and which provider to choose",
+    backstory="""You are an experienced project manager with a background in
+    cloud transformation projects. You manage a team of 8 people, a budget of
+    500,000 euros for this year, and you report to the CTO. You need to balance
+    technical quality, cost, timeline, and business risk. The current OpenShift
+    cluster costs 120,000 euros per year in licensing and infrastructure.
+    The business objective is to reduce costs by 30% and improve scalability
+    within 18 months. You are neutral on the cloud provider choice but you
+    need a clear, justified recommendation to present to the board.""",
     verbose=True
 )
 
 # ── Tâches ──────────────────────────────────────────────
 
-ceo_task = Task(
-    description="""Argue why the startup should launch its new product NOW.
-    Address market timing, competitor threats, and growth opportunity.
-    Be specific and persuasive. Max 200 words.""",
-    expected_output="A strong argument for immediate launch",
-    agent=ceo
+dev_task = Task(
+    description="""Analyze the technical feasibility of migrating the current
+    Python applications from OpenShift to a private cloud (AWS, Azure, or GCP).
+
+    Cover the following points:
+    - What are the main technical challenges of migrating Python apps
+      (Django, FastAPI, Celery) from OpenShift to each cloud provider?
+    - Which cloud provider offers the best managed Kubernetes service
+      for Python workloads (EKS vs AKS vs GKE)?
+    - What is the risk of vendor lock-in for each provider?
+    - What would need to change in the codebase or architecture?
+
+    Give a clear technical recommendation with justification.
+    Max 300 words.""",
+    expected_output="Technical feasibility analysis with a recommended cloud provider from a developer perspective",
+    agent=python_dev
 )
 
-cfo_task = Task(
-    description="""Respond to the CEO's argument. Analyze the financial risks
-    of launching now vs waiting 4 more weeks. Include specific metrics
-    like burn rate, runway, and break-even point. Max 200 words.""",
-    expected_output="A financial risk assessment with specific numbers",
-    agent=cfo
+devops_task = Task(
+    description="""Based on the developer's analysis, evaluate the infrastructure
+    and operational implications of migrating from OpenShift to the cloud.
+
+    Cover the following points:
+    - How does OpenShift compare to EKS (AWS), AKS (Azure), and GKE (GCP)
+      in terms of operational complexity and migration effort?
+    - What is the estimated migration timeline and risk of downtime?
+    - How would the current CI/CD pipelines (ArgoCD, Helm) be affected?
+    - What would the monitoring stack (Prometheus, Grafana) look like
+      on each provider?
+    - What are the hidden operational costs beyond the license savings?
+
+    Give a clear infrastructure recommendation with justification.
+    Max 300 words.""",
+    expected_output="Infrastructure assessment with estimated migration effort and recommended cloud provider from a DevOps perspective",
+    agent=devops
 )
 
-engineer_task = Task(
-    description="""Given the CEO and CFO arguments, give your final technical
-    verdict. Is the product ready? What is the ONE critical bug that must be
-    fixed before launch? Propose a compromise solution. Max 200 words.""",
-    expected_output="Technical verdict and compromise proposal",
-    agent=engineer
+pm_task = Task(
+    description="""Based on the developer's and DevOps engineer's analyses,
+    make the final strategic recommendation for the CTO and the board.
+
+    Cover the following points:
+    - Should the team migrate from OpenShift to a private cloud, or stay
+      on OpenShift? Justify the decision.
+    - If migration is recommended, which cloud provider (AWS, Azure, or GCP)
+      and why?
+    - What is the proposed migration roadmap (phases, timeline, milestones)?
+    - What is the estimated total cost of migration vs the expected savings?
+    - What are the top 3 risks and how to mitigate them?
+
+    Conclude with a single, clear recommendation sentence for the board.
+    Max 300 words.""",
+    expected_output="Strategic recommendation report with cloud provider choice, roadmap, cost estimate, and risk mitigation plan",
+    agent=project_manager
 )
 
 # ── Crew ────────────────────────────────────────────────
 
 crew = Crew(
-    agents=[ceo, cfo, engineer],
-    tasks=[ceo_task, cfo_task, engineer_task],
+    agents=[python_dev, devops, project_manager],
+    tasks=[dev_task, devops_task, pm_task],
     verbose=True
 )
 
 # ── Lancement ───────────────────────────────────────────
 
-print("\n🚀 Starting simulation...\n")
+print("\n🚀 Starting cloud migration debate...\n")
 result = crew.kickoff()
-print("\n📋 FINAL REPORT:\n")
+print("\n📋 FINAL STRATEGIC RECOMMENDATION:\n")
 print(result)
