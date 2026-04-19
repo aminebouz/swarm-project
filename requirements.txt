@@ -3,3 +3,7 @@ crewai-tools
 python-dotenv
 chromadb
 networkx
+langgraph
+langchain
+langchain-openai
+langchain-core
