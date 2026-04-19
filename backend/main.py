@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,21 +21,15 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# ── State ────────────────────────────────────────────────
-
 class SimulationState(TypedDict):
     round_num: int
     max_rounds: int
     consensus_reached: bool
     consensus_score: float
-    developer_position: str
-    devops_position: str
-    pm_position: str
-    pm_previous_position: str
+    positions: dict
+    previous_positions: dict
     history: list
     final_report: str
-
-# ── WebSocket Manager ────────────────────────────────────
 
 class ConnectionManager:
     def __init__(self):
@@ -47,7 +40,8 @@ class ConnectionManager:
         self.active.append(ws)
 
     def disconnect(self, ws: WebSocket):
-        self.active.remove(ws)
+        if ws in self.active:
+            self.active.remove(ws)
 
     async def broadcast(self, msg: dict):
         for ws in self.active:
@@ -57,23 +51,19 @@ class ConnectionManager:
                 pass
 
 manager = ConnectionManager()
-
-# ── Graph Data ───────────────────────────────────────────
-
 graph_data = {"nodes": [], "edges": []}
 knowledge_graph = nx.DiGraph()
 
-def update_knowledge_graph(agent: str, concepts: list, round_num: int):
-    knowledge_graph.add_node(agent, type="agent")
+def update_knowledge_graph(agent_name: str, concepts: list, round_num: int):
+    knowledge_graph.add_node(agent_name, type="agent")
     for concept in concepts:
         knowledge_graph.add_node(concept, type="concept")
-        if knowledge_graph.has_edge(agent, concept):
-            knowledge_graph[agent][concept]["weight"] += 1
+        if knowledge_graph.has_edge(agent_name, concept):
+            knowledge_graph[agent_name][concept]["weight"] += 1
         else:
             knowledge_graph.add_edge(
-                agent, concept, round=round_num, weight=1
+                agent_name, concept, round=round_num, weight=1
             )
-
     graph_data["nodes"] = [
         {"id": n, "type": d.get("type", "concept")}
         for n, d in knowledge_graph.nodes(data=True)
@@ -83,9 +73,34 @@ def update_knowledge_graph(agent: str, concepts: list, round_num: int):
         for u, v, d in knowledge_graph.edges(data=True)
     ]
 
-# ── Simulation ───────────────────────────────────────────
+def check_consensus(positions: dict, previous_positions: dict) -> float:
+    if not previous_positions:
+        return 0.0
+    scores = []
+    keywords = [
+        "recommend", "agree", "conclude", "decision",
+        "should", "must", "will", "propose", "suggest"
+    ]
+    for agent_id in positions:
+        if agent_id not in previous_positions:
+            continue
+        current = positions[agent_id].lower()
+        previous = previous_positions[agent_id].lower()
+        current_hits = set(k for k in keywords if k in current)
+        previous_hits = set(k for k in keywords if k in previous)
+        if not current_hits or not previous_hits:
+            scores.append(0.0)
+            continue
+        intersection = current_hits & previous_hits
+        union = current_hits | previous_hits
+        scores.append(len(intersection) / len(union))
+    return sum(scores) / len(scores) if scores else 0.0
 
-async def run_simulation(max_rounds: int, topic: str):
+async def run_simulation(
+    max_rounds: int,
+    topic: str,
+    agents: list
+):
     llm = ChatOpenAI(
         api_key=os.getenv("OPENAI_API_KEY"),
         base_url=os.getenv("OPENAI_API_BASE"),
@@ -100,16 +115,18 @@ async def run_simulation(max_rounds: int, topic: str):
         pass
     memory = chroma_client.get_or_create_collection(name="swarm_memory")
     knowledge_graph.clear()
+    graph_data["nodes"] = []
+    graph_data["edges"] = []
 
-    def save_memory(agent, round_num, content):
-        doc_id = f"{agent}_round_{round_num}"
+    def save_memory(agent_id: str, round_num: int, content: str):
+        doc_id = f"{agent_id}_round_{round_num}"
         memory.add(
             documents=[content],
-            metadatas=[{"agent": agent, "round": round_num}],
+            metadatas=[{"agent": agent_id, "round": round_num}],
             ids=[doc_id]
         )
 
-    def get_memory_context(query, n=6):
+    def get_memory_context(query: str, n: int = 8) -> str:
         try:
             results = memory.query(query_texts=[query], n_results=n)
             if results["documents"] and results["documents"][0]:
@@ -127,210 +144,146 @@ async def run_simulation(max_rounds: int, topic: str):
         except Exception:
             return "No previous context."
 
-    def check_consensus(state):
-        current = state["pm_position"].lower()
-        previous = state["pm_previous_position"].lower()
-        if not previous:
-            return 0.0
-        keywords = [
-            "aws", "azure", "gcp", "eks", "aks", "gke",
-            "migrate", "recommend", "cost", "timeline"
-        ]
-        current_hits = set(k for k in keywords if k in current)
-        previous_hits = set(k for k in keywords if k in previous)
-        if not current_hits or not previous_hits:
-            return 0.0
-        intersection = current_hits & previous_hits
-        union = current_hits | previous_hits
-        return len(intersection) / len(union)
+    def make_agent_node(agent: dict):
+        agent_id = agent["id"]
+        agent_name = agent["name"]
+        agent_profile = agent["profile"]
+        agent_description = agent["description"]
 
-    async def developer_node(state):
-        round_num = state["round_num"]
-        await manager.broadcast({
-            "type": "log",
-            "agent": "developer",
-            "round": round_num,
-            "message": f"[Round {round_num}] 🐍 Python Developer thinking..."
-        })
-        context = get_memory_context(
-            "Python migration OpenShift EKS AKS GKE"
-        )
-        instruction = (
-            f"Analyze the technical feasibility of migrating Python apps "
-            f"(Django, FastAPI, Celery) from OpenShift for this topic: "
-            f"{topic}. Cover EKS vs AKS vs GKE, vendor lock-in, code "
-            f"changes needed. Max 200 words."
-            if round_num == 1 else
-            f"Round {round_num}: Refine your technical position based on "
-            f"previous debate. Have you changed your mind? Max 200 words."
-        )
-        messages = [
-            SystemMessage(content=(
-                "You are a Senior Python Developer maintaining Django, "
-                "FastAPI, and Celery apps on OpenShift."
-            )),
-            HumanMessage(
-                content=f"Context:\n{context}\n\n{instruction}"
+        async def agent_node(state: SimulationState):
+            round_num = state["round_num"]
+            await manager.broadcast({
+                "type": "log",
+                "agent": agent_id,
+                "agent_name": agent_name,
+                "round": round_num,
+                "message": (
+                    f"[Round {round_num}] 🤖 {agent_name} thinking..."
+                )
+            })
+
+            context = get_memory_context(topic)
+
+            if round_num == 1:
+                instruction = (
+                    f"This is round 1. Give your initial position on "
+                    f"the following topic: {topic}\n\n"
+                    f"Your role and perspective: {agent_description}\n\n"
+                    f"Be specific, structured and argue from your "
+                    f"expertise. Max 250 words."
+                )
+            elif round_num == state["max_rounds"]:
+                instruction = (
+                    f"This is the FINAL round ({round_num}/{state['max_rounds']}).\n"
+                    f"Topic: {topic}\n\n"
+                    f"Synthesize all previous arguments and give your "
+                    f"DEFINITIVE final position. Have you changed your "
+                    f"mind compared to round 1? What is your conclusion? "
+                    f"Max 250 words."
+                )
+            else:
+                other_positions = "\n\n".join([
+                    f"[{k}]: {v[:300]}..."
+                    for k, v in state["positions"].items()
+                    if k != agent_id and v
+                ])
+                instruction = (
+                    f"Round {round_num}/{state['max_rounds']}.\n"
+                    f"Topic: {topic}\n\n"
+                    f"Other agents' positions this round:\n"
+                    f"{other_positions}\n\n"
+                    f"Review the debate so far and REFINE your position. "
+                    f"Do you agree or disagree with the others? "
+                    f"Have you changed your mind on any point? "
+                    f"Max 250 words."
+                )
+
+            messages = [
+                SystemMessage(content=agent_profile),
+                HumanMessage(
+                    content=(
+                        f"Previous debate context:\n{context}\n\n"
+                        f"{instruction}"
+                    )
+                )
+            ]
+
+            await asyncio.sleep(1)
+            response = llm.invoke(messages)
+            content = response.content
+
+            save_memory(agent_id, round_num, content)
+            update_knowledge_graph(
+                agent_name,
+                [w for w in topic.split() if len(w) > 4][:6],
+                round_num
             )
-        ]
-        response = llm.invoke(messages)
-        content = response.content
-        save_memory("python_developer", round_num, content)
-        update_knowledge_graph(
-            "python_developer",
-            ["EKS", "AKS", "GKE", "Django",
-             "FastAPI", "vendor lock-in"],
-            round_num
-        )
-        await manager.broadcast({
-            "type": "agent_result",
-            "agent": "developer",
-            "round": round_num,
-            "content": content
-        })
-        await manager.broadcast({"type": "graph", "data": graph_data})
-        return {**state, "developer_position": content}
 
-    async def devops_node(state):
-        round_num = state["round_num"]
-        await manager.broadcast({
-            "type": "log",
-            "agent": "devops",
-            "round": round_num,
-            "message": f"[Round {round_num}] 🔧 DevOps Engineer thinking..."
-        })
-        context = get_memory_context(
-            "infrastructure ArgoCD Helm Prometheus migration"
-        )
-        instruction = (
-            f"Evaluate infrastructure implications for: {topic}. "
-            f"Cover OpenShift vs EKS/AKS/GKE, migration timeline, "
-            f"CI/CD impact, monitoring. Max 200 words."
-            if round_num == 1 else
-            f"Round {round_num}: Refine your infrastructure assessment. "
-            f"Max 200 words."
-        )
-        messages = [
-            SystemMessage(content=(
-                "You are a DevOps Engineer managing OpenShift with "
-                "ArgoCD, Helm, Prometheus, Grafana."
-            )),
-            HumanMessage(content=(
-                f"Developer:\n{state['developer_position']}\n\n"
-                f"Context:\n{context}\n\n{instruction}"
-            ))
-        ]
-        response = llm.invoke(messages)
-        content = response.content
-        save_memory("devops_engineer", round_num, content)
-        update_knowledge_graph(
-            "devops_engineer",
-            ["ArgoCD", "Helm", "Prometheus",
-             "CI/CD", "OpenShift", "downtime"],
-            round_num
-        )
-        await manager.broadcast({
-            "type": "agent_result",
-            "agent": "devops",
-            "round": round_num,
-            "content": content
-        })
-        await manager.broadcast({"type": "graph", "data": graph_data})
-        return {**state, "devops_position": content}
+            await manager.broadcast({
+                "type": "agent_result",
+                "agent": agent_id,
+                "agent_name": agent_name,
+                "round": round_num,
+                "content": content
+            })
+            await manager.broadcast({
+                "type": "graph",
+                "data": graph_data
+            })
 
-    async def pm_node(state):
-        round_num = state["round_num"]
-        await manager.broadcast({
-            "type": "log",
-            "agent": "pm",
-            "round": round_num,
-            "message": f"[Round {round_num}] 📊 Project Manager thinking..."
-        })
-        context = get_memory_context(
-            "cost savings recommendation board budget"
-        )
-        instruction = (
-            "FINAL ROUND: Give DEFINITIVE recommendation: cloud provider, "
-            "3-phase roadmap, total cost vs savings, top 3 risks. "
-            "Max 250 words."
-            if round_num == state["max_rounds"] else
-            (
-                f"Initial assessment for: {topic}. Migrate or not? "
-                f"Which cloud? Cost estimate? Top 3 risks? Max 200 words."
-                if round_num == 1 else
-                f"Round {round_num}: Refine your position. "
-                f"Max 200 words."
-            )
-        )
-        messages = [
-            SystemMessage(content=(
-                "You are a Project Manager with 500,000 euros budget. "
-                "OpenShift costs 120,000 euros/year. Goal: reduce costs "
-                "30% in 18 months."
-            )),
-            HumanMessage(content=(
-                f"Developer:\n{state['developer_position']}\n\n"
-                f"DevOps:\n{state['devops_position']}\n\n"
-                f"Previous PM:\n"
-                f"{state['pm_position'] or 'First round.'}\n\n"
-                f"Context:\n{context}\n\n{instruction}"
-            ))
-        ]
-        response = llm.invoke(messages)
-        content = response.content
-        save_memory("project_manager", round_num, content)
-        update_knowledge_graph(
-            "project_manager",
-            ["budget", "cost reduction", "18 months", "ROI"],
-            round_num
-        )
-        history = state["history"] + [{
-            "round": round_num,
-            "developer": state["developer_position"],
-            "devops": state["devops_position"],
-            "pm": content
-        }]
-        await manager.broadcast({
-            "type": "agent_result",
-            "agent": "pm",
-            "round": round_num,
-            "content": content
-        })
-        await manager.broadcast({"type": "graph", "data": graph_data})
-        return {
-            **state,
-            "pm_previous_position": state["pm_position"],
-            "pm_position": content,
-            "history": history
-        }
+            new_positions = {**state["positions"], agent_id: content}
+            return {**state, "positions": new_positions}
 
-    async def consensus_node(state):
+        agent_node.__name__ = agent_id
+        return agent_node
+
+    async def consensus_node(state: SimulationState):
         round_num = state["round_num"]
-        score = check_consensus(state)
-        consensus = score >= 0.75 or round_num >= state["max_rounds"]
+        score = check_consensus(
+            state["positions"],
+            state["previous_positions"]
+        )
+        consensus = (
+            score >= 0.75 or round_num >= state["max_rounds"]
+        )
+
         msg = (
             f"🤝 Consensus reached! Score: {score:.2f}"
             if consensus and score >= 0.75 else
-            f"🏁 Max rounds reached ({state['max_rounds']})"
+            f"🏁 Max rounds reached ({state['max_rounds']}). "
+            f"Generating final report..."
             if consensus else
             f"🔄 No consensus yet (score: {score:.2f}). "
             f"Round {round_num + 1} starting..."
         )
+
         await manager.broadcast({
             "type": "consensus",
             "score": score,
             "reached": consensus,
             "message": msg
         })
+
         return {
             **state,
             "consensus_reached": consensus,
             "consensus_score": score,
+            "previous_positions": dict(state["positions"]),
+            "history": state["history"] + [{
+                "round": round_num,
+                "positions": dict(state["positions"])
+            }],
             "round_num": round_num + 1
         }
 
-    async def final_report_node(state):
-        final = state["pm_position"]
+    async def final_report_node(state: SimulationState):
+        last_positions = state["positions"]
+        final = "\n\n".join([
+            f"## {agents[i]['name']}\n{last_positions.get(a['id'], '')}"
+            for i, a in enumerate(agents)
+            if a["id"] in last_positions
+        ])
+
         await manager.broadcast({
             "type": "final_report",
             "content": final,
@@ -340,40 +293,48 @@ async def run_simulation(max_rounds: int, topic: str):
         })
         return {**state, "final_report": final}
 
-    def should_continue(state):
-        return (
-            "final_report"
-            if state["consensus_reached"]
-            else "developer"
-        )
+    def should_continue(state: SimulationState) -> str:
+        if state["consensus_reached"]:
+            return "final_report"
+        return agents[0]["id"]
 
+    # ── Build dynamic graph ──────────────────────────────
     workflow = StateGraph(SimulationState)
-    workflow.add_node("developer", developer_node)
-    workflow.add_node("devops", devops_node)
-    workflow.add_node("pm", pm_node)
+
+    for agent in agents:
+        workflow.add_node(agent["id"], make_agent_node(agent))
+
     workflow.add_node("consensus_check", consensus_node)
     workflow.add_node("final_report", final_report_node)
-    workflow.set_entry_point("developer")
-    workflow.add_edge("developer", "devops")
-    workflow.add_edge("devops", "pm")
-    workflow.add_edge("pm", "consensus_check")
+
+    workflow.set_entry_point(agents[0]["id"])
+
+    for i in range(len(agents) - 1):
+        workflow.add_edge(agents[i]["id"], agents[i + 1]["id"])
+
+    workflow.add_edge(agents[-1]["id"], "consensus_check")
+
     workflow.add_conditional_edges(
         "consensus_check",
         should_continue,
-        {"developer": "developer", "final_report": "final_report"}
+        {
+            agents[0]["id"]: agents[0]["id"],
+            "final_report": "final_report"
+        }
     )
     workflow.add_edge("final_report", END)
+
     simulation_app = workflow.compile()
+
+    initial_positions = {a["id"]: "" for a in agents}
 
     initial_state: SimulationState = {
         "round_num": 1,
         "max_rounds": max_rounds,
         "consensus_reached": False,
         "consensus_score": 0.0,
-        "developer_position": "",
-        "devops_position": "",
-        "pm_position": "",
-        "pm_previous_position": "",
+        "positions": initial_positions,
+        "previous_positions": {},
         "history": [],
         "final_report": ""
     }
@@ -395,18 +356,33 @@ async def websocket_endpoint(ws: WebSocket):
             data = await ws.receive_json()
             if data.get("action") == "start":
                 max_rounds = data.get("max_rounds", 3)
-                topic = data.get("topic", "OpenShift to cloud migration")
+                topic = data.get("topic", "")
+                agents = data.get("agents", [])
+
+                if not topic or not agents:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "Topic and agents are required."
+                    })
+                    continue
+
+                for i, a in enumerate(agents):
+                    a["id"] = f"agent_{i}_{a['name'].lower().replace(' ', '_')}"
+
                 await manager.broadcast({
                     "type": "log",
                     "agent": "system",
                     "round": 0,
                     "message": (
                         f"🚀 Simulation started — "
-                        f"Topic: {topic} | Max rounds: {max_rounds}"
+                        f"Topic: {topic} | "
+                        f"Agents: {len(agents)} | "
+                        f"Max rounds: {max_rounds}"
                     )
                 })
+
                 asyncio.create_task(
-                    run_simulation(max_rounds, topic)
+                    run_simulation(max_rounds, topic, agents)
                 )
     except WebSocketDisconnect:
         manager.disconnect(ws)
