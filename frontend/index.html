@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Swarm Intelligence</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; }
+  header { background: #1a1d2e; border-bottom: 1px solid #2d3148; padding: 1rem 2rem; display: flex; align-items: center; gap: 1rem; }
+  header h1 { font-size: 1.25rem; font-weight: 600; color: #a78bfa; }
+  header span { font-size: 0.8rem; color: #64748b; }
+  .layout { display: grid; grid-template-columns: 300px 1fr; grid-template-rows: 1fr 1fr; height: calc(100vh - 57px); gap: 1px; background: #2d3148; }
+  .panel { background: #0f1117; padding: 1.25rem; overflow: hidden; display: flex; flex-direction: column; }
+  .panel h2 { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 1rem; }
+  .config { grid-row: 1 / 3; }
+  label { display: block; font-size: 0.8rem; color: #94a3b8; margin-bottom: 0.4rem; margin-top: 1rem; }
+  textarea { width: 100%; background: #1a1d2e; border: 1px solid #2d3148; border-radius: 6px; color: #e2e8f0; padding: 0.6rem; font-size: 0.8rem; resize: vertical; min-height: 100px; }
+  input[type=range] { width: 100%; accent-color: #a78bfa; }
+  .rounds-display { font-size: 0.85rem; color: #a78bfa; font-weight: 600; text-align: center; margin-top: 0.25rem; }
+  button { width: 100%; margin-top: 1.5rem; padding: 0.75rem; background: #a78bfa; color: #0f1117; border: none; border-radius: 8px; font-weight: 700; font-size: 0.9rem; cursor: pointer; transition: background 0.2s; }
+  button:hover { background: #c4b5fd; }
+  button:disabled { background: #2d3148; color: #64748b; cursor: not-allowed; }
+  .status { margin-top: 1rem; padding: 0.6rem; border-radius: 6px; font-size: 0.75rem; text-align: center; background: #1a1d2e; color: #64748b; }
+  .status.running { background: #1e3a2f; color: #4ade80; }
+  .status.done { background: #1e2a3a; color: #60a5fa; }
+  .logs { grid-column: 2; overflow-y: auto; }
+  .log-entry { font-size: 0.78rem; padding: 0.3rem 0; border-bottom: 1px solid #1a1d2e; line-height: 1.5; }
+  .log-entry.developer { color: #34d399; }
+  .log-entry.devops { color: #60a5fa; }
+  .log-entry.pm { color: #f59e0b; }
+  .log-entry.system { color: #a78bfa; }
+  .log-entry.consensus { color: #fb7185; font-weight: 600; }
+  .graph-panel { grid-column: 2; }
+  svg { width: 100%; height: 100%; }
+  .node circle { stroke-width: 2; cursor: pointer; }
+  .node.agent circle { r: 12; }
+  .node.concept circle { r: 7; }
+  .node text { font-size: 11px; fill: #e2e8f0; pointer-events: none; }
+  .link { stroke: #2d3148; stroke-opacity: 0.6; }
+  .final-report { margin-top: 1rem; background: #1a1d2e; border-radius: 8px; padding: 1rem; font-size: 0.8rem; line-height: 1.7; color: #cbd5e1; white-space: pre-wrap; overflow-y: auto; flex: 1; display: none; }
+  .consensus-badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: #1e3a2f; color: #4ade80; margin-bottom: 0.5rem; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🤖 Swarm Intelligence</h1>
+  <span>Multi-agent simulation engine</span>
+</header>
+
+<div class="layout">
+
+  <div class="panel config">
+    <h2>Configuration</h2>
+    <label>Topic / Scenario</label>
+    <textarea id="topic">Should we migrate our Python applications from OpenShift to a private cloud (AWS, Azure, or GCP)?</textarea>
+    <label>Max rounds: <span id="rounds-val">3</span></label>
+    <input type="range" id="rounds" min="2" max="8" value="3"
+      oninput="document.getElementById('rounds-val').textContent=this.value">
+    <button id="startBtn" onclick="startSimulation()">▶ Start Simulation</button>
+    <div class="status" id="status">Ready</div>
+  </div>
+
+  <div class="panel logs" id="logs-panel">
+    <h2>Live Logs</h2>
+    <div id="logs"></div>
+  </div>
+
+  <div class="panel graph-panel" id="graph-panel">
+    <h2>Knowledge Graph</h2>
+    <div id="final-badge"></div>
+    <svg id="graph-svg"></svg>
+    <div class="final-report" id="final-report"></div>
+  </div>
+
+</div>
+
+<script>
+let ws = null;
+let simulation = null;
+const agentColors = {
+  python_developer: "#34d399",
+  devops_engineer: "#60a5fa",
+  project_manager: "#f59e0b",
+  developer: "#34d399",
+  devops: "#60a5fa",
+  pm: "#f59e0b"
+};
+
+function connectWS() {
+  ws = new WebSocket("ws://localhost:8000/ws");
+  ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connectWS, 2000);
+}
+
+function handleMessage(msg) {
+  if (msg.type === "log" || msg.type === "consensus") {
+    addLog(msg.message, msg.agent || "consensus");
+  }
+  if (msg.type === "agent_result") {
+    addLog(`  → ${msg.content}`, msg.agent);
+  }
+  if (msg.type === "graph") {
+    updateGraph(msg.data);
+  }
+  if (msg.type === "final_report") {
+    showFinalReport(msg);
+  }
+}
+
+function addLog(text, type) {
+  const div = document.createElement("div");
+  div.className = `log-entry ${type || "system"}`;
+  div.textContent = text;
+  const logs = document.getElementById("logs");
+  logs.appendChild(div);
+  logs.scrollTop = logs.scrollHeight;
+}
+
+function startSimulation() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    alert("Not connected to backend. Check that the server is running.");
+    return;
+  }
+  const topic = document.getElementById("topic").value;
+  const maxRounds = parseInt(document.getElementById("rounds").value);
+  document.getElementById("logs").innerHTML = "";
+  document.getElementById("final-report").style.display = "none";
+  document.getElementById("final-badge").innerHTML = "";
+  document.getElementById("startBtn").disabled = true;
+  document.getElementById("status").className = "status running";
+  document.getElementById("status").textContent = "⚡ Simulation running...";
+  ws.send(JSON.stringify({ action: "start", topic, max_rounds: maxRounds }));
+}
+
+function showFinalReport(msg) {
+  document.getElementById("startBtn").disabled = false;
+  document.getElementById("status").className = "status done";
+  document.getElementById("status").textContent =
+    `✅ Done in ${msg.total_rounds} rounds`;
+  const badge = document.getElementById("final-badge");
+  badge.innerHTML =
+    `<span class="consensus-badge">Consensus: ${(msg.consensus_score * 100).toFixed(0)}%</span>`;
+  const report = document.getElementById("final-report");
+  report.style.display = "block";
+  report.textContent = msg.content;
+  updateGraph(msg.graph);
+}
+
+// ── D3 Graph ─────────────────────────────────────────────
+
+function updateGraph(data) {
+  const svg = d3.select("#graph-svg");
+  svg.selectAll("*").remove();
+  if (!data.nodes.length) return;
+
+  const el = document.getElementById("graph-svg");
+  const W = el.clientWidth || 600;
+  const H = el.clientHeight || 300;
+
+  const g = svg.append("g");
+
+  svg.call(d3.zoom().scaleExtent([0.3, 3])
+    .on("zoom", (e) => g.attr("transform", e.transform)));
+
+  const sim = d3.forceSimulation(data.nodes)
+    .force("link", d3.forceLink(data.edges)
+      .id(d => d.id).distance(90))
+    .force("charge", d3.forceManyBody().strength(-200))
+    .force("center", d3.forceCenter(W / 2, H / 2));
+
+  const link = g.append("g").selectAll("line")
+    .data(data.edges).join("line")
+    .attr("class", "link")
+    .attr("stroke-width", d => Math.sqrt(d.weight || 1));
+
+  const node = g.append("g").selectAll("g")
+    .data(data.nodes).join("g")
+    .attr("class", d => `node ${d.type}`)
+    .call(d3.drag()
+      .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on("end", (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+  node.append("circle")
+    .attr("r", d => d.type === "agent" ? 14 : 8)
+    .attr("fill", d => agentColors[d.id] || "#6366f1")
+    .attr("stroke", "#0f1117");
+
+  node.append("text")
+    .attr("dy", d => d.type === "agent" ? -18 : -12)
+    .attr("text-anchor", "middle")
+    .text(d => d.id.replace(/_/g, " "));
+
+  sim.on("tick", () => {
+    link
+      .attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+}
+
+connectWS();
+</script>
+</body>
+</html>
